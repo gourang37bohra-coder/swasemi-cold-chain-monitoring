@@ -30,8 +30,6 @@ from app.models.telemetry import Telemetry
 from app.models.alert import Alert
 
 
-# Organization ID for Apex Pharma Global
-APEX_ORG_ID = uuid.UUID("36817a3b-0bfe-4577-a647-da8325232448")
 
 # Pre-configured Hardware Trackers aligned with simulator/config.py
 SEED_TRACKERS = [
@@ -95,14 +93,14 @@ def cleanup_legacy_trackers(db: SessionLocal, org: Organization) -> None:
     Safety requirements:
     1. Transactional: runs within the caller's transaction; failure triggers rollback.
     2. Identifies legacy trackers ONLY by exact UUIDs (never by name).
-    3. Scoped strictly to Apex Pharma Global (org.id == 36817a3b-0bfe-4577-a647-da8325232448).
+    3. Scoped strictly to the target organization (using org.id dynamically).
     4. Re-homes shipments before telemetry/alerts to maintain foreign-key graph.
     5. Preserves all telemetry/alert/shipment fields and timestamps intact (only tracker_id changes).
     6. If a legacy shipment is ACTIVE and the target tracker already has an ACTIVE shipment,
        marks only the duplicate legacy shipment COMPLETED (ended_at = now). Does NOT modify target shipment.
     7. Verifies zero remaining foreign-key references before deleting legacy tracker rows.
     """
-    assert org.id == APEX_ORG_ID, f"Invalid organization: {org.id}. Must be {APEX_ORG_ID}"
+    assert org is not None and org.id is not None, "A valid organization with a populated ID is required for legacy cleanup."
     cleanup_time = datetime.now(timezone.utc)
 
     for mapping in LEGACY_TRACKER_MAPPINGS:
@@ -212,18 +210,22 @@ def seed_database():
         else:
             print("SUPER_ADMIN already exists: admin@swasemi.com")
 
-        # 2. Sample Tenant Organization (Apex Pharma Global)
-        org = db.query(Organization).filter_by(name="Apex Pharma Global").first()
-        if not org:
+        # 2. Tenant Organization (Apex Pharma Global)
+        matching_orgs = db.query(Organization).filter_by(name="Apex Pharma Global").all()
+        if len(matching_orgs) > 1:
+            raise RuntimeError(
+                f"Ambiguous state: found {len(matching_orgs)} organizations named 'Apex Pharma Global'. Aborting."
+            )
+        elif len(matching_orgs) == 1:
+            org = matching_orgs[0]
+            print(f"Located existing organization: {org.name} (ID: {org.id})")
+        else:
             org = Organization(
-                id=APEX_ORG_ID,
                 name="Apex Pharma Global",
             )
             db.add(org)
             db.flush()
             print(f"Created Organization: {org.name} (ID: {org.id})")
-        else:
-            print(f"Organization already exists: {org.name} (ID: {org.id})")
 
         # 3. Standard Tenant Operator USER
         user = db.query(User).filter_by(email="operator@apexpharma.com").first()
