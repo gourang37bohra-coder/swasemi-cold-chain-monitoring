@@ -107,13 +107,17 @@ def cleanup_legacy_trackers(db: SessionLocal, org: Organization) -> None:
         legacy_id = mapping["legacy_id"]
         target_id = mapping["target_id"]
 
-        legacy_tracker = db.query(Tracker).filter(
-            Tracker.id == legacy_id,
-            Tracker.organization_id == org.id,
-        ).first()
+        legacy_tracker = db.query(Tracker).filter(Tracker.id == legacy_id).first()
 
         if not legacy_tracker:
+            print(f"Legacy tracker {legacy_id} ({mapping.get('name', 'Unknown')}) not present. Skipping.")
             continue
+
+        if legacy_tracker.organization_id != org.id:
+            raise RuntimeError(
+                f"Organization mismatch for legacy tracker {legacy_id}: "
+                f"expected org {org.id}, found {legacy_tracker.organization_id}. Aborting."
+            )
 
         print(f"Discovered legacy tracker {legacy_id} ({legacy_tracker.name}) for migration -> {target_id}")
 
