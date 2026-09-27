@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
+import L from 'leaflet';
 import { Package, Radio, CheckCircle2, AlertCircle, Thermometer, Clock } from 'lucide-react';
 import { shipmentsApi, telemetryApi, trackersApi } from '../api/client';
 import type { Shipment, Telemetry, Tracker } from '../types';
@@ -14,6 +15,29 @@ interface TrackerWithTelemetry {
   tracker: Tracker;
   latestTelemetry?: Telemetry;
 }
+
+/**
+ * Automatically fits map bounds to include all active tracker coordinates.
+ * If 2 or more markers exist, adjusts viewport with padding.
+ * If only 1 marker exists, pans and zooms centered on that marker.
+ */
+const MapBoundsUpdater: React.FC<{ markers: TrackerWithTelemetry[] }> = ({ markers }) => {
+  const map = useMap();
+
+  useEffect(() => {
+    if (markers.length >= 2) {
+      const bounds = L.latLngBounds(
+        markers.map((m) => [m.latestTelemetry!.latitude, m.latestTelemetry!.longitude])
+      );
+      map.fitBounds(bounds, { padding: [40, 40], maxZoom: 12 });
+    } else if (markers.length === 1) {
+      const single = markers[0].latestTelemetry!;
+      map.setView([single.latitude, single.longitude], 8);
+    }
+  }, [markers, map]);
+
+  return null;
+};
 
 export const Dashboard: React.FC = () => {
   const [trackers, setTrackers] = useState<Tracker[]>([]);
@@ -61,25 +85,43 @@ export const Dashboard: React.FC = () => {
     const loadDashboardData = async () => {
       try {
         setIsLoading(true);
-        const [trackersRes, shipmentsRes, telemetryRes] = await Promise.all([
+        // 1. Fetch trackers and shipments
+        const [trackersRes, shipmentsRes] = await Promise.all([
           trackersApi.list({ page_size: 100 }),
           shipmentsApi.list({ page_size: 100 }),
-          telemetryApi.list({ page_size: 100 }),
         ]);
 
-        setTrackers(trackersRes.items);
+        const trackersList = trackersRes.items;
+        setTrackers(trackersList);
         setShipments(shipmentsRes.items);
-        setLatestReadings(telemetryRes.items);
 
-        // Correlate latest telemetry to trackers
-        const mapData: TrackerWithTelemetry[] = trackersRes.items.map((tracker) => {
-          const reading = telemetryRes.items.find((t) => t.tracker_id === tracker.id);
-          return {
-            tracker,
-            latestTelemetry: reading,
-          };
-        });
-        setTrackerMapData(mapData);
+        // 2. Fetch the latest telemetry record for EACH tracker reliably using tracker_id filter
+        const telemetryResults = await Promise.all(
+          trackersList.map(async (tracker) => {
+            try {
+              const res = await telemetryApi.list({ tracker_id: tracker.id, page_size: 1 });
+              return {
+                tracker,
+                latestTelemetry: res.items.length > 0 ? res.items[0] : undefined,
+              };
+            } catch {
+              return {
+                tracker,
+                latestTelemetry: undefined,
+              };
+            }
+          })
+        );
+
+        setTrackerMapData(telemetryResults);
+
+        // Collect all retrieved readings into latestReadings sorted by timestamp desc
+        const allLatest = telemetryResults
+          .map((item) => item.latestTelemetry)
+          .filter((t): t is Telemetry => Boolean(t))
+          .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+        setLatestReadings(allLatest);
       } catch (err) {
         console.error('Failed to load dashboard metrics', err);
       } finally {
@@ -239,6 +281,7 @@ export const Dashboard: React.FC = () => {
               scrollWheelZoom={false}
               style={{ height: '100%', width: '100%' }}
             >
+              <MapBoundsUpdater markers={markersWithCoords} />
               <TileLayer
                 attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
