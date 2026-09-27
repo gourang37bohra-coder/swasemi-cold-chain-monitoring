@@ -77,25 +77,25 @@ class SimulatorSettings:
                 default_temp_min=2.0,
                 default_temp_max=8.0,
             ),
-            # 2. Gujarat Corridor (Ahmedabad to Surat)
+            # 2. Thane / Navi Mumbai Corridor (Thane to Belapur)
             TrackerConfig(
                 tracker_id=os.getenv("TRACKER_2_ID", "b140093e-b69b-4ab5-92e3-1a97e6cd6a62"),
                 name=os.getenv("TRACKER_2_NAME", "Medical_UnitA"),
                 mqtt_topic=os.getenv("TRACKER_2_TOPIC", "coldchain/trackers/b140093e-b69b-4ab5-92e3-1a97e6cd6a62/telemetry"),
-                initial_lat=23.0225,
-                initial_lon=72.5714,
-                route_name="gujarat_corridor",
+                initial_lat=19.2183,
+                initial_lon=72.9781,
+                route_name="thane_navi_mumbai",
                 default_temp_min=1.0,
                 default_temp_max=3.0,
             ),
-            # 3. Madhya Pradesh Corridor (Indore to Bhopal)
+            # 3. Panvel / Pune Expressway Corridor (Panvel to Pune)
             TrackerConfig(
                 tracker_id=os.getenv("TRACKER_3_ID", "05d3d094-58c7-41ff-b57e-a772948539d6"),
                 name=os.getenv("TRACKER_3_NAME", "Medical_UnitB"),
                 mqtt_topic=os.getenv("TRACKER_3_TOPIC", "coldchain/trackers/05d3d094-58c7-41ff-b57e-a772948539d6/telemetry"),
-                initial_lat=22.7196,
-                initial_lon=75.8577,
-                route_name="mp_corridor",
+                initial_lat=18.9894,
+                initial_lon=73.1175,
+                route_name="panvel_pune",
                 default_temp_min=4.0,
                 default_temp_max=8.0,
             ),

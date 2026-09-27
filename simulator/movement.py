@@ -20,6 +20,26 @@ class RouteModel:
             (18.6275, 73.7997),  # Pimpri-Chinchwad Biotech Park
             (18.5204, 73.8567),  # Pune Central Distribution Terminal
         ],
+        # Route 1B: Thane / Navi Mumbai Cold Corridor (Thane West to Belapur via Airoli & Vashi)
+        "thane_navi_mumbai": [
+            (19.2183, 72.9781),  # Thane Majiwada Distribution Center (~20km North of Mumbai)
+            (19.1860, 72.9756),  # Thane Wagle Industrial Estate
+            (19.1550, 72.9960),  # Airoli Knowledge Park
+            (19.1120, 73.0110),  # Mahape Millenium Business Park
+            (19.0657, 73.0034),  # Vashi APMC Cold Storage
+            (19.0330, 73.0297),  # Nerul Logistics Gateway
+            (19.0180, 73.0390),  # Belapur Pharma Complex
+        ],
+        # Route 1C: Panvel / Pune Expressway Corridor (Panvel to Pune Express Nodes)
+        "panvel_pune": [
+            (18.9894, 73.1175),  # Panvel Cold Transit Hub (~27km East/SE of Mumbai)
+            (18.9450, 73.1720),  # Shedung Expressway Plaza
+            (18.8950, 73.2350),  # Khalapur Toll Plaza
+            (18.7830, 73.3420),  # Khopoli Industrial Transit
+            (18.7557, 73.4091),  # Lonavala Cold Storage
+            (18.6740, 73.6980),  # Dehu Road Pharma Depot
+            (18.5204, 73.8567),  # Pune Central Distribution Terminal
+        ],
         # Route 2: Gujarat Pharma Corridor (Ahmedabad to Surat via Vadodara)
         "gujarat_corridor": [
             (23.0225, 72.5714),  # Ahmedabad Pharma Zone
