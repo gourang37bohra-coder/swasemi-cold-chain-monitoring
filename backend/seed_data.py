@@ -4,13 +4,14 @@ Creates:
 1. SUPER_ADMIN user (admin@swasemi.com / Password@123)
 2. Tenant Organization (Apex Pharma Global)
 3. Standard USER (operator@apexpharma.com / Password@123)
-4. 4 Hardware Trackers (matching simulator/config.py UUIDs and topics):
+4. Exactly 4 Hardware Trackers (matching simulator/config.py UUIDs and topics):
    - Apex Cold-Box 101 (73908884-4df0-4afb-965f-2815e6d11adc)
    - Medical_UnitA (b140093e-b69b-4ab5-92e3-1a97e6cd6a62)
    - Medical_UnitB (05d3d094-58c7-41ff-b57e-a772948539d6)
    - Apex Cold-Box 102 (52a2dc8c-c613-4546-836d-6c64e49a15aa)
-5. Active Shipments for live streaming & compliance monitoring
-6. Baseline telemetry trail for initial UI presentation
+5. Idempotent migration/cleanup of legacy tracker UUIDs (re-homing foreign keys).
+6. Active Shipments for live streaming & compliance monitoring
+7. Baseline telemetry trail for initial UI presentation
 
 This script is 100% idempotent: running it multiple times will not duplicate
 organizations, users, trackers, shipments, or telemetry records.
@@ -26,7 +27,11 @@ from app.models.user import User, UserRole
 from app.models.tracker import Tracker, TrackerStatus
 from app.models.shipment import Shipment, ShipmentStatus
 from app.models.telemetry import Telemetry
+from app.models.alert import Alert
 
+
+# Organization ID for Apex Pharma Global
+APEX_ORG_ID = uuid.UUID("36817a3b-0bfe-4577-a647-da8325232448")
 
 # Pre-configured Hardware Trackers aligned with simulator/config.py
 SEED_TRACKERS = [
@@ -68,6 +73,126 @@ SEED_TRACKERS = [
     },
 ]
 
+# Legacy trackers identified strictly by exact UUID and mapped to simulator trackers
+LEGACY_TRACKER_MAPPINGS = [
+    {
+        "legacy_id": uuid.UUID("b25afd5e-d3bf-43cd-b498-966def3638de"),
+        "target_id": uuid.UUID("73908884-4df0-4afb-965f-2815e6d11adc"),
+        "name": "Apex Cold-Box 101",
+    },
+    {
+        "legacy_id": uuid.UUID("76167925-469b-4592-a031-d89979cbd1f9"),
+        "target_id": uuid.UUID("52a2dc8c-c613-4546-836d-6c64e49a15aa"),
+        "name": "Apex Cold-Box 102",
+    },
+]
+
+
+def cleanup_legacy_trackers(db: SessionLocal, org: Organization) -> None:
+    """Safely migrate historical shipments, telemetry, and alerts from legacy trackers
+    to standard simulator trackers, then remove the legacy tracker records.
+
+    Safety requirements:
+    1. Transactional: runs within the caller's transaction; failure triggers rollback.
+    2. Identifies legacy trackers ONLY by exact UUIDs (never by name).
+    3. Scoped strictly to Apex Pharma Global (org.id == 36817a3b-0bfe-4577-a647-da8325232448).
+    4. Re-homes shipments before telemetry/alerts to maintain foreign-key graph.
+    5. Preserves all telemetry/alert/shipment fields and timestamps intact (only tracker_id changes).
+    6. If a legacy shipment is ACTIVE and the target tracker already has an ACTIVE shipment,
+       marks only the duplicate legacy shipment COMPLETED (ended_at = now). Does NOT modify target shipment.
+    7. Verifies zero remaining foreign-key references before deleting legacy tracker rows.
+    """
+    assert org.id == APEX_ORG_ID, f"Invalid organization: {org.id}. Must be {APEX_ORG_ID}"
+    cleanup_time = datetime.now(timezone.utc)
+
+    for mapping in LEGACY_TRACKER_MAPPINGS:
+        legacy_id = mapping["legacy_id"]
+        target_id = mapping["target_id"]
+
+        legacy_tracker = db.query(Tracker).filter(
+            Tracker.id == legacy_id,
+            Tracker.organization_id == org.id,
+        ).first()
+
+        if not legacy_tracker:
+            continue
+
+        print(f"Discovered legacy tracker {legacy_id} ({legacy_tracker.name}) for migration -> {target_id}")
+
+        # Ensure target tracker exists before re-homing foreign keys
+        target_tracker = db.query(Tracker).filter(
+            Tracker.id == target_id,
+            Tracker.organization_id == org.id,
+        ).first()
+        if not target_tracker:
+            t_cfg = next(t for t in SEED_TRACKERS if t["id"] == target_id)
+            target_tracker = Tracker(
+                id=t_cfg["id"],
+                organization_id=org.id,
+                name=t_cfg["name"],
+                mqtt_topic=t_cfg["mqtt_topic"],
+                status=t_cfg["status"],
+                last_seen=datetime.now(timezone.utc) if t_cfg["status"] == TrackerStatus.ONLINE else None,
+            )
+            db.add(target_tracker)
+            db.flush()
+            print(f"Created target tracker {target_tracker.name} ({target_tracker.id}) prior to re-homing.")
+
+        # 1. Re-home shipments
+        target_active_shipment = db.query(Shipment).filter(
+            Shipment.tracker_id == target_id,
+            Shipment.organization_id == org.id,
+            Shipment.status == ShipmentStatus.ACTIVE,
+        ).first()
+
+        legacy_shipments = db.query(Shipment).filter(
+            Shipment.tracker_id == legacy_id,
+            Shipment.organization_id == org.id,
+        ).all()
+
+        for s in legacy_shipments:
+            if s.status == ShipmentStatus.ACTIVE and target_active_shipment is not None and s.id != target_active_shipment.id:
+                s.status = ShipmentStatus.COMPLETED
+                s.ended_at = cleanup_time
+                print(f"Archived duplicate legacy active shipment {s.id} as COMPLETED (ended_at={cleanup_time.isoformat()})")
+            s.tracker_id = target_id
+            print(f"Re-homed shipment {s.id} to target tracker {target_id}")
+
+        db.flush()
+
+        # 2. Re-home telemetry (preserving all fields/timestamps, only updating tracker_id)
+        telem_count = db.query(Telemetry).filter(
+            Telemetry.tracker_id == legacy_id,
+            Telemetry.organization_id == org.id,
+        ).update({"tracker_id": target_id}, synchronize_session=False)
+        if telem_count > 0:
+            print(f"Re-homed {telem_count} telemetry record(s) from {legacy_id} to {target_id}")
+        db.flush()
+
+        # 3. Re-home alerts (preserving all fields/timestamps, only updating tracker_id)
+        alert_count = db.query(Alert).filter(
+            Alert.tracker_id == legacy_id,
+            Alert.organization_id == org.id,
+        ).update({"tracker_id": target_id}, synchronize_session=False)
+        if alert_count > 0:
+            print(f"Re-homed {alert_count} alert(s) from {legacy_id} to {target_id}")
+        db.flush()
+
+        # 4. Verify zero remaining references before deleting legacy tracker
+        rem_shipments = db.query(Shipment).filter_by(tracker_id=legacy_id).count()
+        rem_telemetry = db.query(Telemetry).filter_by(tracker_id=legacy_id).count()
+        rem_alerts = db.query(Alert).filter_by(tracker_id=legacy_id).count()
+
+        if rem_shipments == 0 and rem_telemetry == 0 and rem_alerts == 0:
+            db.delete(legacy_tracker)
+            db.flush()
+            print(f"Safely deleted legacy tracker {legacy_id} (0 remaining references).")
+        else:
+            raise RuntimeError(
+                f"Aborting deletion of legacy tracker {legacy_id}: still referenced by "
+                f"{rem_shipments} shipment(s), {rem_telemetry} telemetry row(s), {rem_alerts} alert(s)."
+            )
+
 
 def seed_database():
     db = SessionLocal()
@@ -91,7 +216,7 @@ def seed_database():
         org = db.query(Organization).filter_by(name="Apex Pharma Global").first()
         if not org:
             org = Organization(
-                id=uuid.UUID("36817a3b-0bfe-4577-a647-da8325232448"),
+                id=APEX_ORG_ID,
                 name="Apex Pharma Global",
             )
             db.add(org)
@@ -115,20 +240,13 @@ def seed_database():
         else:
             print("USER already exists: operator@apexpharma.com")
 
-        # 4. Hardware Trackers (at least 4 trackers matching simulator UUIDs/topics)
-        trackers_map = {}
+        # 4. Clean up and migrate any legacy trackers prior to standard tracker synchronization
+        cleanup_legacy_trackers(db, org)
+
+        # 5. Hardware Trackers (exactly 4 trackers matching simulator UUIDs/topics)
         for t_cfg in SEED_TRACKERS:
             tracker = db.query(Tracker).filter_by(id=t_cfg["id"]).first()
             if not tracker:
-                # Handle potential legacy tracker with same name but different ID
-                legacy_trackers = db.query(Tracker).filter(
-                    Tracker.id != t_cfg["id"],
-                    Tracker.name == t_cfg["name"],
-                ).all()
-                for lt in legacy_trackers:
-                    lt.name = f"{lt.name} (Legacy)"
-                    print(f"Renamed legacy tracker to avoid name collision: {lt.name} ({lt.id})")
-
                 tracker = Tracker(
                     id=t_cfg["id"],
                     organization_id=org.id,
@@ -141,7 +259,6 @@ def seed_database():
                 db.flush()
                 print(f"Created Tracker: {tracker.name} ({tracker.id}) -> {tracker.mqtt_topic}")
             else:
-                # Synchronize properties to ensure alignment with simulator
                 updated = False
                 if tracker.name != t_cfg["name"]:
                     tracker.name = t_cfg["name"]
@@ -158,9 +275,7 @@ def seed_database():
                 else:
                     print(f"Tracker already exists: {tracker.name} ({tracker.id})")
 
-            trackers_map[str(t_cfg["id"])] = tracker
-
-        # 5. Active Shipments for Trackers
+        # 6. Active Shipments for Trackers
         for t_cfg in SEED_TRACKERS:
             if not t_cfg["has_active_shipment"]:
                 continue
@@ -172,7 +287,6 @@ def seed_database():
             ).first()
 
             if not active_shipment:
-                # Check if any existing shipment is tied to this tracker
                 existing_shipment = db.query(Shipment).filter_by(tracker_id=t_id).first()
                 if not existing_shipment:
                     active_shipment = Shipment(
@@ -198,7 +312,7 @@ def seed_database():
             else:
                 print(f"ACTIVE Shipment already exists for {t_cfg['name']} (ID: {active_shipment.id})")
 
-        # 6. Sample Initial Telemetry for Apex Cold-Box 101 (Tracker 1)
+        # 7. Sample Initial Telemetry for Apex Cold-Box 101 (Tracker 1)
         tracker1_id = uuid.UUID("73908884-4df0-4afb-965f-2815e6d11adc")
         shipment1 = db.query(Shipment).filter_by(
             tracker_id=tracker1_id,
@@ -232,8 +346,17 @@ def seed_database():
                     db.add(t)
                 print("Created 4 sample telemetry data points with GPS trail for Apex Cold-Box 101.")
 
+        # 8. Post-cleanup verification: exactly 4 expected simulator trackers must exist
+        org_trackers = db.query(Tracker).filter_by(organization_id=org.id).all()
+        current_tracker_ids = {t.id for t in org_trackers}
+        expected_tracker_ids = {t["id"] for t in SEED_TRACKERS}
+        assert current_tracker_ids == expected_tracker_ids, (
+            f"Tracker verification failed! Found: {current_tracker_ids}, Expected: {expected_tracker_ids}"
+        )
+        print(f"Verified exactly {len(org_trackers)} expected simulator trackers exist in organization.")
+
         db.commit()
-        print("Database seeding completed successfully!")
+        print("Database seeding and legacy cleanup completed successfully!")
     except Exception as e:
         db.rollback()
         print(f"Error seeding database: {e}")
